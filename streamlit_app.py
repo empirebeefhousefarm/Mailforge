@@ -275,7 +275,9 @@ if "config" not in st.session_state:
         "email_mode": "html",  # "html" or "text"
         "html_file": None,
         "text_content": "",
+        "recipient_mode": "upload",  # "upload" or "paste"
         "csv_file": None,
+        "pasted_emails": "",
     }
 
 # ============ SIDEBAR ============
@@ -655,11 +657,47 @@ elif st.session_state.current_page == "compose":
                 st.markdown('<div class="status-success">✓ Text content ready</div>', unsafe_allow_html=True)
         
         st.markdown('<div class="section-title">Recipients</div>', unsafe_allow_html=True)
-        st.markdown('<span class="label-small">CSV Recipients</span>', unsafe_allow_html=True)
-        csv_file = st.file_uploader("Upload CSV", type=["csv"], key="csv")
-        if csv_file:
-            st.session_state.config["csv_file"] = pd.read_csv(csv_file)
-            st.markdown(f'<div class="status-success">✓ CSV loaded ({len(st.session_state.config["csv_file"])} rows)</div>', unsafe_allow_html=True)
+        
+        recipient_mode = st.radio("Choose recipient input method:", ["📤 Upload CSV", "📋 Paste Emails"], 
+                                 horizontal=True, label_visibility="collapsed",
+                                 index=0 if st.session_state.config["recipient_mode"] == "upload" else 1)
+        
+        st.session_state.config["recipient_mode"] = "upload" if recipient_mode == "📤 Upload CSV" else "paste"
+        
+        if st.session_state.config["recipient_mode"] == "upload":
+            st.markdown('<span class="label-small">CSV Recipients</span>', unsafe_allow_html=True)
+            csv_file = st.file_uploader("Upload CSV", type=["csv"], key="csv")
+            if csv_file:
+                st.session_state.config["csv_file"] = pd.read_csv(csv_file)
+                st.markdown(f'<div class="status-success">✓ CSV loaded ({len(st.session_state.config["csv_file"])} rows)</div>', unsafe_allow_html=True)
+        else:
+            st.markdown('<span class="label-small">Paste Email Addresses</span>', unsafe_allow_html=True)
+            st.session_state.config["pasted_emails"] = st.text_area(
+                "Emails",
+                st.session_state.config["pasted_emails"],
+                placeholder="Paste emails here, one per line:\n\njohn@example.com\njane@example.com\nbob@example.com\n\nOr comma-separated:\njohn@example.com, jane@example.com, bob@example.com",
+                height=150,
+                label_visibility="collapsed"
+            )
+            
+            if st.session_state.config["pasted_emails"]:
+                # Parse emails
+                email_list = []
+                
+                # Try comma-separated first
+                if "," in st.session_state.config["pasted_emails"]:
+                    email_list = [e.strip() for e in st.session_state.config["pasted_emails"].split(",") if e.strip()]
+                else:
+                    # Otherwise split by newline
+                    email_list = [e.strip() for e in st.session_state.config["pasted_emails"].split("\n") if e.strip()]
+                
+                # Filter valid emails
+                valid_emails = [e for e in email_list if "@" in e and "." in e]
+                
+                st.markdown(f'<div class="status-success">✓ {len(valid_emails)} email(s) detected</div>', unsafe_allow_html=True)
+                
+                # Create a simple dataframe
+                st.session_state.config["csv_file"] = pd.DataFrame({"email": valid_emails})
     
     with tab3:
         has_content = (st.session_state.config["html_file"] if st.session_state.config["email_mode"] == "html" else st.session_state.config["text_content"])
