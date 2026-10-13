@@ -251,9 +251,10 @@ def login_user(username, password):
     return result[0] if result else None
 
 def get_user_by_id(user_id):
+    # FIX: also return created_at so the admin Details tab can show it
     conn = sqlite3.connect("mailforge.db")
     c = conn.cursor()
-    c.execute("SELECT username FROM users WHERE id = ?", (user_id,))
+    c.execute("SELECT username, created_at FROM users WHERE id = ?", (user_id,))
     result = c.fetchone()
     conn.close()
     return result
@@ -510,7 +511,7 @@ else:
                         
                         with col1:
                             st.markdown(f"**👤 {username}**")
-                            st.caption(created_at.split('.')[0])
+                            st.caption(str(created_at).split('.')[0])
                         
                         with col2:
                             st.metric("Campaigns", len(campaigns))
@@ -556,7 +557,7 @@ else:
                         col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 1, 1])
                         with col1:
                             st.write(f"**{campaign[0]}**")
-                            st.caption(campaign[6].split('.')[0])
+                            st.caption(str(campaign[6]).split('.')[0])
                         with col2:
                             st.metric("Sent", campaign[1])
                         with col3:
@@ -587,7 +588,9 @@ else:
             with tab3:
                 st.markdown('<div class="section-title">Account Details</div>', unsafe_allow_html=True)
                 st.write(f"**Username:** {user_info[0]}")
-                st.write(f"**Account Created:** {}")
+                # FIX: was st.write(f"**Account Created:** {}")  <- empty f-string expression
+                created = str(user_info[1]).split('.')[0] if user_info[1] else "Unknown"
+                st.write(f"**Account Created:** {created}")
                 total_campaigns = len(get_user_campaigns(user_id, limit=100))
                 total_servers = len(get_user_smtp_profiles(user_id))
                 st.write(f"**Total Campaigns:** {total_campaigns}")
@@ -914,7 +917,7 @@ else:
                                     server.sendmail(smtp_email, [recipient], msg.as_string())
                                     server.quit()
                                     sent += 1
-                                except:
+                                except Exception:
                                     failed += 1
                                 
                                 progress.progress((idx + 1) / len(df))
@@ -987,7 +990,7 @@ else:
                         col1, col2, col3, col4, col5 = st.columns([2, 1, 1, 1, 1])
                         with col1:
                             st.write(f"**{campaign[0]}**")
-                            st.caption(campaign[6].split('.')[0])
+                            st.caption(str(campaign[6]).split('.')[0])
                         with col2:
                             st.metric("Sent", campaign[1])
                         with col3:
