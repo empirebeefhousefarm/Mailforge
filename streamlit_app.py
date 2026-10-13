@@ -396,6 +396,7 @@ if not st.session_state.user_id:
                 if username == "Dylan" and password == "Segun$45.":
                     st.session_state.user_id = -1
                     st.session_state.is_admin = True
+                    st.session_state.current_page = "admin_users"
                     st.markdown('<div class="status-admin">✓ Admin logged in!</div>', unsafe_allow_html=True)
                     st.rerun()
                 elif username and password:
@@ -403,6 +404,7 @@ if not st.session_state.user_id:
                     if user_id:
                         st.session_state.user_id = user_id
                         st.session_state.is_admin = False
+                        st.session_state.current_page = "dashboard"
                         st.markdown('<div class="status-success">✓ Login successful!</div>', unsafe_allow_html=True)
                         st.rerun()
                     else:
@@ -461,8 +463,16 @@ else:
                 st.session_state.current_page = "admin_users"
             if st.button("🔑 Access Code", use_container_width=True):
                 st.session_state.current_page = "admin_access"
-            if st.button("📧 MailForge", use_container_width=True):
+
+            st.markdown('<div class="section-title">MailForge</div>', unsafe_allow_html=True)
+            if st.button("🏠 Dashboard", use_container_width=True):
                 st.session_state.current_page = "dashboard"
+            if st.button("📧 Compose", use_container_width=True):
+                st.session_state.current_page = "compose"
+            if st.button("🖥️ Servers", use_container_width=True):
+                st.session_state.current_page = "profiles"
+            if st.button("📊 History", use_container_width=True):
+                st.session_state.current_page = "history"
         else:
             st.markdown(f"""
             <div style="padding: 16px 0; margin-bottom: 24px; border-bottom: 1px solid #2a3f5f;">
@@ -489,7 +499,7 @@ else:
         st.markdown("</div>", unsafe_allow_html=True)
     
     # ============ ADMIN PAGES ============
-    if st.session_state.is_admin:
+    if st.session_state.is_admin and st.session_state.current_page.startswith("admin_"):
         if st.session_state.current_page == "admin_users":
             st.markdown("# 👥 All Users")
             st.markdown('<div class="subtitle">Manage all MailForge accounts</div>', unsafe_allow_html=True)
