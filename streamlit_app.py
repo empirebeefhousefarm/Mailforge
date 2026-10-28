@@ -493,6 +493,8 @@ else:
                 st.session_state.current_page = "admin_access"
 
         st.markdown('<div class="sidebar-section-header">Account</div>', unsafe_allow_html=True)
+        if st.button("🔐 My Account", use_container_width=True):
+            st.session_state.current_page = "account"
         if st.button("🚪 Sign Out", use_container_width=True):
             sign_out()
             st.rerun()
@@ -970,6 +972,41 @@ else:
                                     for err in errors:
                                         st.write(err)
 
+    def render_account():
+        st.markdown("# 🔐 My Account")
+        st.markdown('<div class="subtitle">Change your password or delete your account</div>', unsafe_allow_html=True)
+        uname = get_user(uid)[0]
+        st.markdown(f"**Username:** {uname}")
+
+        st.markdown('<div class="section-title">Change Password</div>', unsafe_allow_html=True)
+        if is_admin:
+            st.caption("The admin password is stored in Streamlit Secrets. Change it there.")
+        else:
+            old_pw = st.text_input("Current password", type="password", key="acc_old_pw")
+            new_pw = st.text_input("New password", type="password", key="acc_new_pw")
+            conf_pw = st.text_input("Confirm new password", type="password", key="acc_conf_pw")
+            if st.button("🔐 UPDATE PASSWORD", key="acc_pw_btn"):
+                if not login_user(uname, old_pw):
+                    st.markdown('<div class="status-error">✗ Current password is incorrect</div>', unsafe_allow_html=True)
+                elif len(new_pw) < 6:
+                    st.markdown('<div class="status-error">✗ New password must be at least 6 characters</div>', unsafe_allow_html=True)
+                elif new_pw != conf_pw:
+                    st.markdown('<div class="status-error">✗ New passwords do not match</div>', unsafe_allow_html=True)
+                else:
+                    reset_password(uid, new_pw)
+                    st.markdown('<div class="status-success">✓ Password updated</div>', unsafe_allow_html=True)
+
+        st.markdown('<div class="section-title">Delete Account</div>', unsafe_allow_html=True)
+        if is_admin:
+            st.caption("The admin account cannot be deleted.")
+        else:
+            st.markdown('<div class="status-warning">This permanently deletes your account, saved servers and campaign history.</div>', unsafe_allow_html=True)
+            confirm = st.checkbox("I understand this cannot be undone", key="acc_del_confirm")
+            if st.button("🗑️ DELETE MY ACCOUNT", disabled=not confirm, key="acc_del_btn"):
+                delete_user(uid)
+                sign_out()
+                st.rerun()
+
     # ----- Router -----
     if is_admin and page == "admin_users":
         render_admin_users()
@@ -983,5 +1020,7 @@ else:
         render_servers()
     elif page == "history":
         render_history()
+    elif page == "account":
+        render_account()
     else:
         render_dashboard()
