@@ -4,7 +4,7 @@ import os
 import re
 import secrets
 import smtplib
-import sqlite3
+import psycopg2
 import time
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
@@ -23,15 +23,26 @@ st.set_page_config(
 )
 
 # ============ CONSTANTS ============
-ADMIN_USERNAME = "Dylan"
-ADMIN_PASSWORD = "Segun$45."
+def get_secret(name, default=None):
+    """Read a value from Streamlit Secrets (or .streamlit/secrets.toml when running locally)."""
+    try:
+        value = st.secrets[name]
+        return value if value not in ("", None) else default
+    except Exception:
+        return default
+
+
+ADMIN_USERNAME = get_secret("ADMIN_USERNAME", "Dylan")
+ADMIN_PASSWORD = get_secret("ADMIN_PASSWORD")
+DATABASE_URL = get_secret("DATABASE_URL")
+DEFAULT_ACCESS_CODE = get_secret("ACCESS_CODE", "272727")
+
+if not ADMIN_PASSWORD or not DATABASE_URL:
+    st.error("Missing secrets. Add ADMIN_PASSWORD and DATABASE_URL in the app's Secrets settings.")
+    st.stop()
+
 EMAIL_PATTERN = r'^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$'
 EMAIL_RE = re.compile(EMAIL_PATTERN)
-
-# Database lives in your home folder so it survives Termux restarts
-DB_DIR = os.path.join(os.path.expanduser("~"), "mailforge")
-os.makedirs(DB_DIR, exist_ok=True)
-DB_PATH = os.path.join(DB_DIR, "mailforge.db")
 
 # ============ THEME ============
 st.markdown("""
@@ -92,39 +103,58 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
-# ============ DATABASE ============
-def db():
-    return sqlite3.connect(DB_PATH)
-
-
-def now():
-    return datetime.now().isoformat(sep=" ", timespec="seconds")
+# ============ DATABASE (Supabase / PostgreSQL) ============
+def run(sql, params=(), fetch=None):
+    conn = psycopg2.connect(DATABASE_URL, connect_timeout=10)
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, params)
+                if fetch == "one":
+                    return cur.fetchone()
+                if fetch == "all":
+                    return cur.fetchall()
+                return None
+    finally:
+        conn.close()
 
 
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 
+@st.cache_resource
 def init_db():
-    conn = db()
-    c = conn.cursor()
-    c.execute("""CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY, username TEXT UNIQUE, password TEXT, created_at TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS smtp_profiles (
-        id INTEGER PRIMARY KEY, user_id INTEGER, profile_name TEXT, smtp_host TEXT,
-        smtp_port INTEGER, smtp_email TEXT, smtp_password TEXT, sender_name TEXT, created_at TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS campaigns (
-        id INTEGER PRIMARY KEY, user_id INTEGER, subject TEXT, sent_count INTEGER,
-        failed_count INTEGER, total_count INTEGER, success_rate REAL, email_type TEXT, created_at TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS admin_settings (
-        setting_key TEXT PRIMARY KEY, setting_value TEXT, updated_at TEXT)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS sessions (
-        token TEXT PRIMARY KEY, user_id INTEGER, is_admin INTEGER, created_at TEXT)""")
-    c.execute("INSERT OR IGNORE INTO admin_settings VALUES (?, ?, ?)", ("access_code", "272727", now()))
-    c.execute("INSERT OR IGNORE INTO users (username, password, created_at) VALUES (?, ?, ?)",
-              (ADMIN_USERNAME, hash_password(ADMIN_PASSWORD), now()))
-    conn.commit()
-    conn.close()
+    run("""CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        username TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW())""")
+    run("""CREATE TABLE IF NOT EXISTS smtp_profiles (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        profile_name TEXT, smtp_host TEXT, smtp_port INTEGER, smtp_email TEXT,
+        smtp_password TEXT, sender_name TEXT,
+        created_at TIMESTAMP DEFAULT NOW())""")
+    run("""CREATE TABLE IF NOT EXISTS campaigns (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        subject TEXT, sent_count INTEGER, failed_count INTEGER, total_count INTEGER,
+        success_rate REAL, email_type TEXT,
+        created_at TIMESTAMP DEFAULT NOW())""")
+    run("""CREATE TABLE IF NOT EXISTS admin_settings (
+        setting_key TEXT PRIMARY KEY,
+        setting_value TEXT,
+        updated_at TIMESTAMP DEFAULT NOW())""")
+    run("""CREATE TABLE IF NOT EXISTS sessions (
+        token TEXT PRIMARY KEY,
+        user_id INTEGER,
+        is_admin INTEGER,
+        created_at TIMESTAMP DEFAULT NOW())""")
+    run("INSERT INTO admin_settings (setting_key, setting_value) VALUES ('access_code', %s) "
+        "ON CONFLICT (setting_key) DO NOTHING", (DEFAULT_ACCESS_CODE,))
+    run("INSERT INTO users (username, password) VALUES (%s, %s) "
+        "ON CONFLICT (username) DO NOTHING", (ADMIN_USERNAME, hash_password(ADMIN_PASSWORD)))
 
 
 init_db()
@@ -138,92 +168,60 @@ def register_user(username, password):
     if username.lower() == ADMIN_USERNAME.lower():
         return False, "That username is not available"
     try:
-        conn = db()
-        conn.execute("INSERT INTO users (username, password, created_at) VALUES (?, ?, ?)",
-                     (username, hash_password(password), now()))
-        conn.commit()
-        conn.close()
+        run("INSERT INTO users (username, password) VALUES (%s, %s)",
+            (username, hash_password(password)))
         return True, "Account created successfully!"
-    except sqlite3.IntegrityError:
+    except psycopg2.IntegrityError:
         return False, "Username already exists!"
 
 
 def login_user(username, password):
-    conn = db()
-    row = conn.execute("SELECT id FROM users WHERE username = ? AND password = ?",
-                       (username, hash_password(password))).fetchone()
-    conn.close()
+    row = run("SELECT id FROM users WHERE username = %s AND password = %s",
+              (username, hash_password(password)), fetch="one")
     return row[0] if row else None
 
 
 def get_admin_id():
-    conn = db()
-    row = conn.execute("SELECT id FROM users WHERE username = ?", (ADMIN_USERNAME,)).fetchone()
-    conn.close()
-    return row[0]
+    return run("SELECT id FROM users WHERE username = %s", (ADMIN_USERNAME,), fetch="one")[0]
 
 
 def get_user(user_id):
-    conn = db()
-    row = conn.execute("SELECT username, created_at FROM users WHERE id = ?", (user_id,)).fetchone()
-    conn.close()
-    return row
+    return run("SELECT username, created_at FROM users WHERE id = %s", (user_id,), fetch="one")
 
 
 def get_all_users():
-    conn = db()
-    rows = conn.execute("SELECT id, username, created_at FROM users ORDER BY created_at DESC").fetchall()
-    conn.close()
-    return rows
+    return run("SELECT id, username, created_at FROM users ORDER BY created_at DESC", fetch="all")
 
 
 def reset_password(user_id, new_password):
-    conn = db()
-    conn.execute("UPDATE users SET password = ? WHERE id = ?", (hash_password(new_password), user_id))
-    conn.commit()
-    conn.close()
+    run("UPDATE users SET password = %s WHERE id = %s", (hash_password(new_password), user_id))
 
 
 def delete_user(user_id):
-    conn = db()
-    c = conn.cursor()
-    c.execute("DELETE FROM sessions WHERE user_id = ?", (user_id,))
-    c.execute("DELETE FROM campaigns WHERE user_id = ?", (user_id,))
-    c.execute("DELETE FROM smtp_profiles WHERE user_id = ?", (user_id,))
-    c.execute("DELETE FROM users WHERE id = ?", (user_id,))
-    conn.commit()
-    conn.close()
+    run("DELETE FROM sessions WHERE user_id = %s", (user_id,))
+    run("DELETE FROM campaigns WHERE user_id = %s", (user_id,))
+    run("DELETE FROM smtp_profiles WHERE user_id = %s", (user_id,))
+    run("DELETE FROM users WHERE id = %s", (user_id,))
 
 
 # ============ LOGIN SESSIONS (stay logged in until Sign Out) ============
 def create_session(user_id, is_admin):
     token = secrets.token_urlsafe(32)
-    conn = db()
-    conn.execute("INSERT INTO sessions VALUES (?, ?, ?, ?)", (token, user_id, int(is_admin), now()))
-    conn.commit()
-    conn.close()
+    run("INSERT INTO sessions (token, user_id, is_admin) VALUES (%s, %s, %s)",
+        (token, user_id, int(is_admin)))
     return token
 
 
 def get_session(token):
-    conn = db()
-    row = conn.execute("SELECT user_id, is_admin FROM sessions WHERE token = ?", (token,)).fetchone()
-    conn.close()
-    return row
+    return run("SELECT user_id, is_admin FROM sessions WHERE token = %s", (token,), fetch="one")
 
 
 def delete_session(token):
-    conn = db()
-    conn.execute("DELETE FROM sessions WHERE token = ?", (token,))
-    conn.commit()
-    conn.close()
+    run("DELETE FROM sessions WHERE token = %s", (token,))
 
 
 def logout_non_admin_sessions():
-    conn = db()
-    conn.execute("DELETE FROM sessions WHERE is_admin = 0")
-    conn.commit()
-    conn.close()
+    run("DELETE FROM sessions WHERE is_admin = 0")
 
 
 def start_login(user_id, is_admin):
@@ -246,66 +244,45 @@ def sign_out():
 
 # ============ ACCESS CODE ============
 def get_access_code():
-    conn = db()
-    row = conn.execute("SELECT setting_value FROM admin_settings WHERE setting_key = ?",
-                       ("access_code",)).fetchone()
-    conn.close()
-    return row[0] if row else "272727"
+    row = run("SELECT setting_value FROM admin_settings WHERE setting_key = 'access_code'", fetch="one")
+    return row[0] if row else DEFAULT_ACCESS_CODE
 
 
 def update_access_code(new_code):
-    conn = db()
-    conn.execute("UPDATE admin_settings SET setting_value = ?, updated_at = ? WHERE setting_key = ?",
-                 (new_code, now(), "access_code"))
-    conn.commit()
-    conn.close()
+    run("UPDATE admin_settings SET setting_value = %s, updated_at = NOW() WHERE setting_key = 'access_code'",
+        (new_code,))
 
 
 # ============ SMTP SERVERS ============
 def save_smtp_profile(user_id, name, host, port, email, password, sender):
-    conn = db()
-    conn.execute("""INSERT INTO smtp_profiles (user_id, profile_name, smtp_host, smtp_port,
-                    smtp_email, smtp_password, sender_name, created_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                 (user_id, name, host, int(port), email, password, sender, now()))
-    conn.commit()
-    conn.close()
+    run("""INSERT INTO smtp_profiles (user_id, profile_name, smtp_host, smtp_port,
+           smtp_email, smtp_password, sender_name)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+        (user_id, name, host, int(port), email, password, sender))
 
 
 def get_user_smtp_profiles(user_id):
-    conn = db()
-    rows = conn.execute("""SELECT id, profile_name, smtp_host, smtp_port, smtp_email,
-                           smtp_password, sender_name FROM smtp_profiles
-                           WHERE user_id = ? ORDER BY id ASC""", (user_id,)).fetchall()
-    conn.close()
-    return rows
+    return run("""SELECT id, profile_name, smtp_host, smtp_port, smtp_email,
+                  smtp_password, sender_name FROM smtp_profiles
+                  WHERE user_id = %s ORDER BY id ASC""", (user_id,), fetch="all")
 
 
 def delete_smtp_profile(profile_id):
-    conn = db()
-    conn.execute("DELETE FROM smtp_profiles WHERE id = ?", (profile_id,))
-    conn.commit()
-    conn.close()
+    run("DELETE FROM smtp_profiles WHERE id = %s", (profile_id,))
 
 
 # ============ CAMPAIGN HISTORY ============
 def save_campaign(user_id, subject, sent, failed, total, email_type):
     rate = (sent / total * 100) if total > 0 else 0
-    conn = db()
-    conn.execute("""INSERT INTO campaigns (user_id, subject, sent_count, failed_count, total_count,
-                    success_rate, email_type, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                 (user_id, subject, sent, failed, total, rate, email_type, now()))
-    conn.commit()
-    conn.close()
+    run("""INSERT INTO campaigns (user_id, subject, sent_count, failed_count, total_count,
+           success_rate, email_type) VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+        (user_id, subject, sent, failed, total, rate, email_type))
 
 
 def get_user_campaigns(user_id, limit=100):
-    conn = db()
-    rows = conn.execute("""SELECT subject, sent_count, failed_count, total_count, success_rate,
-                           email_type, created_at FROM campaigns WHERE user_id = ?
-                           ORDER BY created_at DESC LIMIT ?""", (user_id, limit)).fetchall()
-    conn.close()
-    return rows
+    return run("""SELECT subject, sent_count, failed_count, total_count, success_rate,
+                  email_type, created_at FROM campaigns WHERE user_id = %s
+                  ORDER BY created_at DESC LIMIT %s""", (user_id, limit), fetch="all")
 
 
 # ============ RECIPIENT VALIDATION ============
@@ -378,6 +355,7 @@ def card(icon, value, label, color="#00d9ff"):
         <div class="metric-label">{label}</div>
     </div>
     """, unsafe_allow_html=True)
+
 
 
 # ============ SESSION STATE ============
@@ -652,7 +630,7 @@ else:
             st.markdown('<div class="status-success">✓ All other users have been signed out</div>', unsafe_allow_html=True)
 
         st.markdown('<div class="section-title">Database</div>', unsafe_allow_html=True)
-        st.caption(f"Stored at: {DB_PATH}")
+        st.caption("Database: Supabase (PostgreSQL)")
 
     # ----- User pages (also available to admin) -----
     def render_dashboard():
