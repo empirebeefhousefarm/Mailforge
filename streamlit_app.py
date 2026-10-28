@@ -327,18 +327,29 @@ def fill(text, row):
     return text
 
 
+def open_smtp(host, port, login, password):
+    """Open and log in to an SMTP server. Port 465 uses SSL, other ports use STARTTLS."""
+    port = int(port)
+    if port == 465:
+        server = smtplib.SMTP_SSL(host, port, timeout=15)
+        server.ehlo()
+    else:
+        server = smtplib.SMTP(host, port, timeout=15)
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+    server.login(login, password.replace(" ", ""))
+    return server
+
+
 def send_one(host, port, login, password, from_header, to, subject, body, ctype):
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = from_header
     msg["To"] = to
     msg.attach(MIMEText(body, "html" if ctype == "html" else "plain", "utf-8"))
-    server = smtplib.SMTP(host, int(port), timeout=15)
+    server = open_smtp(host, port, login, password)
     try:
-        server.ehlo()
-        server.starttls()
-        server.ehlo()
-        server.login(login, password)
         server.sendmail(login, [to], msg.as_string())
     finally:
         try:
@@ -724,9 +735,8 @@ else:
             with s1:
                 if st.button("🔗 TEST CONNECTION", use_container_width=True):
                     try:
-                        srv = smtplib.SMTP(st.session_state.f_host, int(st.session_state.f_port), timeout=10)
-                        srv.ehlo(); srv.starttls(); srv.ehlo()
-                        srv.login(st.session_state.f_email, st.session_state.f_password)
+                        srv = open_smtp(st.session_state.f_host, st.session_state.f_port,
+                                        st.session_state.f_email, st.session_state.f_password)
                         srv.quit()
                         st.markdown('<div class="status-success">✓ Connection successful</div>', unsafe_allow_html=True)
                     except Exception as e:
